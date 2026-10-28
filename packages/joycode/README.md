@@ -43,11 +43,11 @@ magpie plugin login joycode
 
 ## 消息转发策略
 
-默认保留完整多轮对话、工具调用和模型原生请求格式。插件从当前账号的 `joycode_userInfo` 获取真实 `userId`、`tenant`、`orgFullName`，按 JoyCode 请求格式补入正文；Chat Completions 和 Responses 额外设置 `language: UNKNOWN`。身份信息按账号 loader 隔离缓存，不接受客户端指定的用户身份。缺少这些元数据时，已观察到网关返回 `AI_GRAY_ACCESS_DENIED`。
+默认保留完整多轮对话、工具调用和模型原生请求格式。插件从当前账号的 `joycode_userInfo` 获取真实 `userId`、`tenant`、`orgFullName`，按 JoyCode 请求格式补入正文；三种协议统一设置 `language: UNKNOWN`。身份信息按账号 loader 隔离缓存，不接受客户端指定的用户身份。缺少这些元数据时，已观察到网关返回 `AI_GRAY_ACCESS_DENIED`。
 
 网关可能以 HTTP 200 和 SSE 响应头返回裸 JSON 错误；插件会把这种错误转换为明确的失败响应，避免客户端一直等待。普通 403 权限错误不会再被误标为登录失效。
 
-0.1.1 已实测 JoyAI-Code-1.6 完整流式文字回复、工具调用及工具结果往返，并通过 magpie `provider test`。0.2.0 新增的 Responses、Anthropic Messages 和 `Request` 输入路径由回归测试覆盖；本次核验真实账号时只调用了模型目录，未发起 GPT/Claude 对话请求，避免消耗模型额度。
+0.1.1 已实测 JoyAI-Code-1.6 完整流式文字回复、工具调用及工具结果往返，并通过 magpie `provider test`。0.2.0 于 2026-10-28 通过真实账号执行 `provider test`：`GPT-6 Astra` 的 Responses 请求返回 200（3.7 秒），`Claude-Opus-5-hq` 的 Anthropic Messages 请求返回 200（34.7 秒；首次请求在 60 秒超时，重试成功）。Anthropic 的 `/v1/messages/count_tokens` 在插件本地返回 404，不访问 JoyCode，避免把 token 计数误发成一次付费生成。
 
 如果实测 JoyCode 后端拒绝多轮/工具调用格式的消息，可以开启回退模式：
 

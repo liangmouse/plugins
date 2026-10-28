@@ -141,12 +141,21 @@ function adapterProtocol(model) {
   return 'chat'
 }
 
+function requestPath(input) {
+  try {
+    return input instanceof Request ? new URL(input.url).pathname : new URL(String(input)).pathname
+  } catch {
+    return ''
+  }
+}
+
+function isCountTokensRequest(input) {
+  return /\/messages\/count_tokens\/?$/.test(requestPath(input))
+}
+
 /** The URL the host builds from a model's api.url says which request shape it sent. */
 function requestProtocol(input, payload) {
-  let path = ''
-  try {
-    path = input instanceof Request ? new URL(input.url).pathname : new URL(String(input)).pathname
-  } catch {}
+  const path = requestPath(input)
   if (/\/responses\/?$/.test(path)) return 'responses'
   if (/\/messages(?:\/count_tokens)?\/?$/.test(path)) return 'anthropic'
   if (/\/chat\/completions\/?$/.test(path)) return 'chat'
@@ -607,6 +616,17 @@ export const JoyCodeAuthPlugin = async (_input, options) => {
           baseURL: '',
 
           async fetch(input, init) {
+            // JoyCode has no token-count endpoint. Let magpie fall back to its
+            // local estimator instead of signing a paid generation request.
+            if (isCountTokensRequest(input)) {
+              return Response.json({
+                error: {
+                  type: 'unsupported_endpoint',
+                  message: 'JoyCode does not provide token counting',
+                },
+              }, { status: 404 })
+            }
+
             // Preserve chat structure; the IDE also adds authenticated metadata.
             const account = await identity()
             const request = input instanceof Request ? input : undefined
@@ -622,7 +642,7 @@ export const JoyCodeAuthPlugin = async (_input, options) => {
             const body = JSON.stringify({
               ...(flatten && protocol === 'chat' ? flattenBody(payload) : payload),
               ...account,
-              ...(protocol === 'anthropic' ? {} : { language: 'UNKNOWN' }),
+              language: 'UNKNOWN',
             })
 
             // 2) URL: fresh signature per request, on the model's wire protocol.

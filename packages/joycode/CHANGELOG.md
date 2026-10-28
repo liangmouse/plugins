@@ -4,9 +4,10 @@
 
 - 按 JoyCode 模型目录中的 `extJson.adapterType` 自动选择 Chat Completions、Responses 或 Anthropic Messages，使 `/models` 返回的 GPT、Claude 及其他模型都能使用正确的 SDK 和网关。
 - 请求转发支持 `Request` 输入，并正确清理宿主生成的鉴权头及长度/主机头。
+- Anthropic `/messages/count_tokens` 在插件本地返回 404，避免被转发为一次付费生成；三种协议统一携带 `language`。
 - 修复 Anthropic Messages 与 Responses 的正常非流式 JSON 被误判为无效响应的问题；`flatten` 仅用于 Chat Completions。
 
-验证：38 项回归测试通过；真实 JoyCode 账号的 `joycode_modelList` 返回 15 个模型，覆盖 10 个 chat、4 个 `openai-response` 和 1 个 `anthropic`。
+验证：39 项回归测试通过；真实 JoyCode 账号的 `joycode_modelList` 返回 15 个模型，覆盖 10 个 chat、4 个 `openai-response` 和 1 个 `anthropic`。`provider test joycode 'GPT-6 Astra'` 的 Responses 请求返回 200（3.7 秒）；`provider test joycode 'Claude-Opus-5-hq'` 的 Anthropic Messages 请求返回 200（34.7 秒，首次 60 秒超时后重试成功）。
 
 ## 0.1.1
 

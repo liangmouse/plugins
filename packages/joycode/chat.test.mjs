@@ -185,10 +185,30 @@ test('Request input carries its URL, body, method, and headers into routing', as
   assert.equal(sent.model, payload.model)
   assert.deepEqual(sent.messages, payload.messages)
   assert.equal(sent.userId, 'test-user')
-  assert.equal(sent.language, undefined)
+  assert.equal(sent.language, 'UNKNOWN')
   assert.equal(seen.init.headers.get('x-api-key'), null)
   assert.equal(seen.init.headers.get('ptkey'), 'fake-key')
   assert.equal(await r.text(), 'event: message_stop\n\ndata: {}\n\n')
+})
+
+test('Anthropic count_tokens returns 404 without contacting upstream', async t => {
+  let fetchCalls = 0
+  t.mock.method(globalThis, 'fetch', async () => {
+    fetchCalls++
+    throw new Error('count_tokens must not call upstream')
+  })
+  const hooks = await plugin.server({})
+  const loader = await hooks.auth.loader(async () => ({ type: 'api', key: 'fake-key' }))
+  const r = await loader.fetch('https://api-ai.jd.com/v1/messages/count_tokens', {
+    method: 'POST',
+    body: JSON.stringify({
+      model: 'Claude-Opus-5-hq',
+      messages: [{ role: 'user', content: 'hi' }],
+    }),
+  })
+  assert.equal(r.status, 404)
+  assert.equal(fetchCalls, 0)
+  assert.equal((await r.json()).error.type, 'unsupported_endpoint')
 })
 
 for (const [name, input, payload, body] of [
