@@ -1,5 +1,13 @@
 # 更新记录
 
+## 0.2.0
+
+- 按 JoyCode 模型目录中的 `extJson.adapterType` 自动选择 Chat Completions、Responses 或 Anthropic Messages，使 `/models` 返回的 GPT、Claude 及其他模型都能使用正确的 SDK 和网关。
+- 请求转发支持 `Request` 输入，并正确清理宿主生成的鉴权头及长度/主机头。
+- 修复 Anthropic Messages 与 Responses 的正常非流式 JSON 被误判为无效响应的问题；`flatten` 仅用于 Chat Completions。
+
+验证：38 项回归测试通过；真实 JoyCode 账号的 `joycode_modelList` 返回 15 个模型，覆盖 10 个 chat、4 个 `openai-response` 和 1 个 `anthropic`。
+
 ## 0.1.1
 
 - 支持浏览器登录京东账号，自动接收并验证 JoyCode 票据，保存租户和登录类型。

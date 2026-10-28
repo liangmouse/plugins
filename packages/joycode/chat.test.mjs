@@ -2,15 +2,26 @@ import test from 'node:test'
 import assert from 'node:assert/strict'
 import plugin from './index.mjs'
 
-async function request(t, response) {
-  t.mock.method(globalThis, 'fetch', async url => new URL(url).searchParams.get('functionId') === 'joycode_userInfo'
-    ? Response.json({ code: 0, data: { userId: 'test-user', tenant: 'test-tenant', orgFullName: 'test-org' } })
-    : response)
+async function request(t, response, {
+  input = 'https://api-ai.jd.com/v1/chat/completions',
+  payload = { model: 'JoyAI-Code-1.6', messages: [{ role: 'user', content: 'OK' }], stream: true },
+  init = {},
+  upstream,
+} = {}) {
+  t.mock.method(globalThis, 'fetch', async (url, requestInit) => {
+    if (new URL(url).searchParams.get('functionId') === 'joycode_userInfo') {
+      return Response.json({ code: 0, data: { userId: 'test-user', tenant: 'test-tenant', orgFullName: 'test-org' } })
+    }
+    upstream?.(url, requestInit)
+    return typeof response === 'function' ? response(url, requestInit) : response
+  })
   const hooks = await plugin.server({})
   const loader = await hooks.auth.loader(async () => ({ type: 'api', key: 'fake-key' }))
-  return loader.fetch('https://api-ai.jd.com/v1/chat/completions', {
-    method: 'POST', headers: { 'content-type': 'application/json' },
-    body: JSON.stringify({ model: 'JoyAI-Code-1.6', messages: [{ role: 'user', content: 'OK' }], stream: true }),
+  return loader.fetch(input, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: typeof payload === 'string' ? payload : JSON.stringify(payload),
+    ...init,
   })
 }
 function chunks(parts) {
@@ -90,6 +101,135 @@ test('chat adds authenticated account metadata while preserving tools and messag
     await r.text()
   }
   assert.equal(infoCalls, 1)
+})
+
+for (const [name, input, payload, functionId, npmShape] of [
+  [
+    'Responses',
+    'https://api-ai.jd.com/v1/responses',
+    { model: 'GPT-5.6 Sol', input: 'OK', stream: true },
+    'responses_completions',
+    'input',
+  ],
+  [
+    'Anthropic Messages',
+    'https://api-ai.jd.com/v1/messages',
+    { model: 'Claude-Opus-5-hq', max_tokens: 8, messages: [{ role: 'user', content: 'OK' }], stream: true },
+    'anthropic_completions',
+    'messages',
+  ],
+]) {
+  test(`${name} requests are signed on their own gateway and keep their shape`, async t => {
+    let seen
+    const r = await request(t, new Response('data: [DONE]\n\n', {
+      headers: { 'content-type': 'text/event-stream' },
+    }), {
+      input,
+      payload,
+      init: { headers: { 'content-type': 'application/json', 'x-api-key': 'host-key' } },
+      upstream(url, init) {
+        seen = { url, init }
+      },
+    })
+    assert.equal(new URL(seen.url).searchParams.get('functionId'), functionId)
+    const sent = JSON.parse(seen.init.body)
+    assert.equal(sent.model, payload.model)
+    assert.deepEqual(sent[npmShape], payload[npmShape])
+    assert.equal(sent.userId, 'test-user')
+    assert.equal(sent.tenant, 'test-tenant')
+    assert.equal(seen.init.headers.get('x-api-key'), null)
+    assert.equal(seen.init.headers.get('ptkey'), 'fake-key')
+    assert.equal(r.status, 200)
+    assert.equal(await r.text(), 'data: [DONE]\n\n')
+  })
+}
+
+test('Chat Completions keeps using the chat gateway', async t => {
+  let seen
+  const r = await request(t, new Response('data: [DONE]\n\n', {
+    headers: { 'content-type': 'text/event-stream' },
+  }), {
+    upstream(url) { seen = new URL(url) },
+  })
+  assert.equal(seen.searchParams.get('functionId'), 'chat_completions')
+  assert.equal(r.status, 200)
+})
+
+test('Request input carries its URL, body, method, and headers into routing', async t => {
+  let seen
+  t.mock.method(globalThis, 'fetch', async (url, init) => {
+    if (new URL(url).searchParams.get('functionId') === 'joycode_userInfo') {
+      return Response.json({ code: 0, data: { userId: 'test-user', tenant: 'test-tenant' } })
+    }
+    seen = { url, init }
+    return new Response('event: message_stop\n\ndata: {}\n\n', {
+      headers: { 'content-type': 'text/event-stream' },
+    })
+  })
+  const hooks = await plugin.server({})
+  const loader = await hooks.auth.loader(async () => ({ type: 'api', key: 'fake-key' }))
+  const payload = {
+    model: 'Claude-Opus-5-hq',
+    max_tokens: 8,
+    messages: [{ role: 'user', content: 'OK' }],
+    stream: true,
+  }
+  const r = await loader.fetch(new Request('https://api-ai.jd.com/v1/messages', {
+    method: 'POST',
+    headers: { 'content-type': 'application/json', 'x-api-key': 'host-key' },
+    body: JSON.stringify(payload),
+  }))
+  assert.equal(new URL(seen.url).searchParams.get('functionId'), 'anthropic_completions')
+  assert.equal(seen.init.method, 'POST')
+  const sent = JSON.parse(seen.init.body)
+  assert.equal(sent.model, payload.model)
+  assert.deepEqual(sent.messages, payload.messages)
+  assert.equal(sent.userId, 'test-user')
+  assert.equal(sent.language, undefined)
+  assert.equal(seen.init.headers.get('x-api-key'), null)
+  assert.equal(seen.init.headers.get('ptkey'), 'fake-key')
+  assert.equal(await r.text(), 'event: message_stop\n\ndata: {}\n\n')
+})
+
+for (const [name, input, payload, body] of [
+  [
+    'Responses',
+    'https://api-ai.jd.com/v1/responses',
+    { model: 'GPT-5.6 Sol', input: 'OK', stream: false },
+    { id: 'resp_1', object: 'response', status: 'completed', output: [] },
+  ],
+  [
+    'Anthropic Messages',
+    'https://api-ai.jd.com/v1/messages',
+    { model: 'Claude-Opus-5-hq', max_tokens: 8, messages: [{ role: 'user', content: 'OK' }] },
+    { id: 'msg_1', type: 'message', role: 'assistant', content: [], stop_reason: 'end_turn' },
+  ],
+]) {
+  test(`${name} non-streaming JSON is a valid success response`, async t => {
+    const r = await request(t, Response.json(body), { input, payload })
+    assert.equal(r.status, 200)
+    assert.deepEqual(await r.json(), body)
+  })
+}
+
+test('flatten applies only to Chat Completions, never Responses', async t => {
+  let sent
+  t.mock.method(globalThis, 'fetch', async (url, init) => {
+    if (new URL(url).searchParams.get('functionId') === 'joycode_userInfo') {
+      return Response.json({ code: 0, data: { userId: 'test-user' } })
+    }
+    sent = JSON.parse(init.body)
+    return new Response('data: [DONE]\n\n', { headers: { 'content-type': 'text/event-stream' } })
+  })
+  const hooks = await plugin.server({}, { flatten: true })
+  const loader = await hooks.auth.loader(async () => ({ type: 'api', key: 'fake-key' }))
+  const r = await loader.fetch('https://api-ai.jd.com/v1/responses', {
+    method: 'POST',
+    body: JSON.stringify({ model: 'GPT-5.6 Sol', input: 'OK', stream: true }),
+  })
+  await r.text()
+  assert.equal(sent.input, 'OK')
+  assert.equal(sent.messages, undefined)
 })
 
 test('HTTP 403 permission denial is not marked as expired credentials', async t => {
