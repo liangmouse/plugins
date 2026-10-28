@@ -47,7 +47,9 @@ magpie plugin login joycode
 
 网关可能以 HTTP 200 和 SSE 响应头返回裸 JSON 错误；插件会把这种错误转换为明确的失败响应，避免客户端一直等待。普通 403 权限错误不会再被误标为登录失效。
 
-0.1.1 已实测 JoyAI-Code-1.6 完整流式文字回复、工具调用及工具结果往返，并通过 magpie `provider test`。0.2.0 于 2026-10-28 通过真实账号执行 `provider test`：`GPT-6 Astra` 的 Responses 请求返回 200（3.7 秒），`Claude-Opus-5-hq` 的 Anthropic Messages 请求返回 200（34.7 秒；首次请求在 60 秒超时，重试成功）。Anthropic 的 `/v1/messages/count_tokens` 在插件本地返回 404，不访问 JoyCode，避免把 token 计数误发成一次付费生成。
+JoyCode 的 Anthropic 与 Responses 网关还会给 SSE 多加一层 framing（Anthropic 为 `data: event: …` 和 `data: data: …`，Responses 为 `data: data: …`）。插件在流式转发时增量还原标准 SSE，不缓存完整回复；否则官方 Anthropic/OpenAI SDK 会分别表现为空流和 `malformed server-sent event JSON`。标准 SSE 会按原字节透传，跨上游 chunk 的边界也有回归测试。
+
+0.1.1 已实测 JoyAI-Code-1.6 完整流式文字回复、工具调用及工具结果往返，并通过 magpie `provider test`。0.2.0 于 2026-10-28 通过真实账号验证：`provider test` 的 `GPT-6 Astra` Responses 请求返回 200（3.0 秒），`Claude-Opus-5-hq` Anthropic Messages 请求返回 200（7.3 秒）；再经 magpie 网关用官方 OpenAI SDK 的 Responses 流和官方 Anthropic SDK 的 Messages 流各发一条短请求，均正确收到文本 `OK` 和完整事件序列（2.9 秒、7.6 秒）。更早的 Claude 冷启动曾出现 34.7 秒，分段计时显示时间耗在上游响应头而不是插件缓冲。Anthropic 的 `/v1/messages/count_tokens` 在插件本地返回 404，不访问 JoyCode，避免把 token 计数误发成一次付费生成。
 
 如果实测 JoyCode 后端拒绝多轮/工具调用格式的消息，可以开启回退模式：
 

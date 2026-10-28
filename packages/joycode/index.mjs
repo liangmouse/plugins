@@ -12,7 +12,9 @@
  * each request on the matching gateway, inject credential headers, and add
  * authenticated account identity to the body. We inspect response prefixes
  * for bare JSON gateway errors; valid SSE bytes are replayed unchanged,
- * including tool-call deltas.
+ * including tool-call deltas. JoyCode's Anthropic and Responses gateways add
+ * an extra SSE framing layer; we remove it incrementally so the official
+ * Anthropic and OpenAI SDKs receive standard events without extra buffering.
  *
  * Options (magpie plugin options joycode '{"…"}'):
  *   { "flatten": true }  — flatten multi-turn messages into a single prompt
@@ -365,6 +367,110 @@ function isSuccessfulJson(json, protocol) {
   return false
 }
 
+/**
+ * JoyCode returns Anthropic events with one extra SSE framing layer:
+ *
+ *   data: event: message_start
+ *   data: data: {"type":"message_start",…}
+ *
+ * The official Anthropic SDK ignores `data:` events without an `event:` line,
+ * so passing those bytes through produces an empty stream. Rewrite only the
+ * two non-standard prefixes and coalesce their separating blank line into one
+ * standard SSE event, incrementally and without buffering the model output.
+ * Standard Anthropic SSE is left untouched. Buffering until a newline also
+ * handles either prefix being split across upstream chunks.
+ */
+function normalizeAnthropicSse(source) {
+  const decoder = new TextDecoder()
+  const encoder = new TextEncoder()
+  let pending = ''
+  let heldEvent
+
+  const processLine = (line, controller) => {
+    const ending = line.endsWith('\r\n') ? '\r\n' : line.endsWith('\n') ? '\n' : line.endsWith('\r') ? '\r' : ''
+    const body = ending ? line.slice(0, -ending.length) : line
+
+    if (!body) {
+      // JoyCode puts a blank line between `data: event` and `data: data`.
+      // Hold that separator back until both halves become one SSE event.
+      if (!heldEvent) controller.enqueue(encoder.encode(ending))
+      return
+    }
+
+    if (body.startsWith('data: event: ')) {
+      if (heldEvent) controller.enqueue(encoder.encode(heldEvent.text + heldEvent.ending))
+      heldEvent = { text: `event: ${body.slice('data: event: '.length)}`, ending }
+      return
+    }
+
+    if (body.startsWith('data: data: ')) {
+      if (heldEvent) {
+        controller.enqueue(encoder.encode(heldEvent.text + heldEvent.ending))
+        heldEvent = undefined
+      }
+      controller.enqueue(encoder.encode(`data: ${body.slice('data: data: '.length)}${ending}`))
+      return
+    }
+
+    if (heldEvent) {
+      controller.enqueue(encoder.encode(heldEvent.text + heldEvent.ending))
+      heldEvent = undefined
+    }
+    controller.enqueue(encoder.encode(line))
+  }
+
+  return source.pipeThrough(new TransformStream({
+    transform(chunk, controller) {
+      pending += decoder.decode(chunk, { stream: true })
+      let newline
+      while ((newline = pending.indexOf('\n')) !== -1) {
+        processLine(pending.slice(0, newline + 1), controller)
+        pending = pending.slice(newline + 1)
+      }
+    },
+    flush(controller) {
+      pending += decoder.decode()
+      if (pending) processLine(pending, controller)
+      if (heldEvent) controller.enqueue(encoder.encode(heldEvent.text + heldEvent.ending))
+    },
+  }))
+}
+
+/**
+ * JoyCode's Responses gateway wraps each SSE payload as `data: data: {…}`.
+ * Remove that extra layer without waiting for the response to finish.
+ * Standard Responses SSE, and every other line, is passed through unchanged.
+ */
+function normalizeResponsesSse(source) {
+  const decoder = new TextDecoder()
+  const encoder = new TextEncoder()
+  let pending = ''
+
+  const processLine = (line, controller) => {
+    const ending = line.endsWith('\r\n') ? '\r\n' : line.endsWith('\n') ? '\n' : line.endsWith('\r') ? '\r' : ''
+    const body = ending ? line.slice(0, -ending.length) : line
+    const normalized = body.startsWith('data: data: ')
+      ? `data: ${body.slice('data: data: '.length)}${ending}`
+      : line
+    controller.enqueue(encoder.encode(normalized))
+  }
+
+  return source.pipeThrough(new TransformStream({
+    transform(chunk, controller) {
+      pending += decoder.decode(chunk, { stream: true })
+      let newline
+      while ((newline = pending.indexOf('\n')) !== -1) {
+        processLine(pending.slice(0, newline + 1), controller)
+        pending = pending.slice(newline + 1)
+      }
+    },
+    flush(controller) {
+      pending += decoder.decode()
+      if (pending) processLine(pending, controller)
+    },
+  }))
+}
+
 async function normalizeResponse(response, protocol = 'chat') {
   if (!response.ok) {
     const headers = new Headers(response.headers)
@@ -414,7 +520,7 @@ async function normalizeResponse(response, protocol = 'chat') {
   const headers = new Headers(response.headers)
   headers.delete('content-length')
   headers.delete('content-encoding')
-  return new Response(new ReadableStream({
+  const stream = new ReadableStream({
     async pull(controller) {
       if (buffered.length) { controller.enqueue(buffered.shift()); return }
       try {
@@ -424,7 +530,16 @@ async function normalizeResponse(response, protocol = 'chat') {
       } catch (error) { controller.error(error) }
     },
     cancel(reason) { return reader.cancel(reason) },
-  }), { status: response.status, headers })
+  })
+  const normalized = protocol === 'anthropic'
+    ? normalizeAnthropicSse(stream)
+    : protocol === 'responses'
+      ? normalizeResponsesSse(stream)
+      : stream
+  return new Response(normalized, {
+    status: response.status,
+    headers,
+  })
 }
 
 // ---------------------------------------------------------------- account data

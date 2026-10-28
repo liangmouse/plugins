@@ -191,6 +191,70 @@ test('Request input carries its URL, body, method, and headers into routing', as
   assert.equal(await r.text(), 'event: message_stop\n\ndata: {}\n\n')
 })
 
+test('Anthropic double-wrapped SSE is normalized across chunk boundaries', async t => {
+  const upstreamText = [
+    'data: event: message_start\n\n',
+    'data: data: {"type":"message_start","message":{"id":"msg_1"}}\n\n',
+    'data: event: content_block_delta\n\n',
+    'data: data: {"type":"content_block_delta","delta":{"type":"text_delta","text":"OK"}}\n\n',
+    'data: event: message_stop\n\n',
+    'data: data: {"type":"message_stop"}\n\n',
+    'data: [DONE]\n\n',
+  ].join('')
+  const split = upstreamText.indexOf('data: data:', 20) + 8
+  const r = await request(t, new Response(chunks([
+    upstreamText.slice(0, split),
+    upstreamText.slice(split),
+  ]), { headers: { 'content-type': 'text/event-stream' } }), {
+    input: 'https://api-ai.jd.com/v1/messages',
+    payload: { model: 'Claude-Opus-5-hq', max_tokens: 8, messages: [{ role: 'user', content: 'OK' }], stream: true },
+  })
+  assert.equal(r.status, 200)
+  assert.equal(await r.text(), [
+    'event: message_start\n',
+    'data: {"type":"message_start","message":{"id":"msg_1"}}\n\n',
+    'event: content_block_delta\n',
+    'data: {"type":"content_block_delta","delta":{"type":"text_delta","text":"OK"}}\n\n',
+    'event: message_stop\n',
+    'data: {"type":"message_stop"}\n\n',
+    'data: [DONE]\n\n',
+  ].join(''))
+})
+
+test('standard Anthropic SSE is preserved byte for byte', async t => {
+  const text = 'event: message_start\r\ndata: {"type":"message_start"}\r\n\r\nevent: message_stop\r\ndata: {"type":"message_stop"}\r\n\r\n'
+  const r = await request(t, new Response(chunks([text.slice(0, 17), text.slice(17)]), {
+    headers: { 'content-type': 'text/event-stream' },
+  }), {
+    input: 'https://api-ai.jd.com/v1/messages',
+    payload: { model: 'Claude-Opus-5-hq', max_tokens: 8, messages: [{ role: 'user', content: 'OK' }], stream: true },
+  })
+  assert.equal(r.status, 200)
+  assert.equal(await r.text(), text)
+})
+
+test('Responses double-wrapped SSE is normalized across chunk boundaries', async t => {
+  const upstreamText = [
+    'data: data: {"type":"response.created","sequence_number":0}\n\n',
+    'data: data: {"type":"response.output_text.delta","delta":"OK"}\n\n',
+    'data: data: {"type":"response.completed","sequence_number":2}\n\n',
+  ].join('')
+  const split = upstreamText.indexOf('output_text') - 4
+  const r = await request(t, new Response(chunks([
+    upstreamText.slice(0, split),
+    upstreamText.slice(split),
+  ]), { headers: { 'content-type': 'text/event-stream' } }), {
+    input: 'https://api-ai.jd.com/v1/responses',
+    payload: { model: 'GPT-6 Astra', input: 'OK', stream: true },
+  })
+  assert.equal(r.status, 200)
+  assert.equal(await r.text(), [
+    'data: {"type":"response.created","sequence_number":0}\n\n',
+    'data: {"type":"response.output_text.delta","delta":"OK"}\n\n',
+    'data: {"type":"response.completed","sequence_number":2}\n\n',
+  ].join(''))
+})
+
 test('Anthropic count_tokens returns 404 without contacting upstream', async t => {
   let fetchCalls = 0
   t.mock.method(globalThis, 'fetch', async () => {
