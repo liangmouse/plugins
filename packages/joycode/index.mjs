@@ -774,6 +774,10 @@ export const JoyCodeAuthPlugin = async (_input, options) => {
                 : new TextDecoder().decode(source)
             const payload = JSON.parse(source)
             const protocol = requestProtocol(request ?? input, payload)
+            // Codex compaction asks for none, but Astra's lowest supported effort is low.
+            if (protocol === 'responses' && payload.model === 'GPT-6 Astra' && payload.reasoning?.effort === 'none') {
+              payload.reasoning = { ...payload.reasoning, effort: 'low' }
+            }
             const forwarded = protocol === 'responses' ? withoutUnstoredReasoningIds(payload) : payload
             const body = JSON.stringify({
               ...(flatten && protocol === 'chat' ? flattenBody(payload) : forwarded),

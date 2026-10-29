@@ -1,5 +1,11 @@
 # 更新记录
 
+## 0.2.2
+
+- 将 GPT-6 Astra Responses 请求的显式 `reasoning.effort: none` 映射为该模型支持的最低档 `low`，避免 Codex 压缩请求被上游以 `unsupported_value` 拒绝。其他模型、协议、有效强度和未指定强度的请求保持不变。
+
+验证：真实账号下原请求的 `none` 被上游拒绝；修补后通过插件发送两次带 `none` 和历史 reasoning id 的短请求，分别收到 `OK`（4.0 秒）和单句摘要（2.3 秒），均包含 `response.completed`。尚未在原始长会话中重跑 Codex 压缩。
+
 ## 0.2.1
 
 - 修复 Codex 压缩时重放 `store: false` 的 `rs_…` reasoning id 被 JoyCode Responses 后端拒绝并连续失败的问题。转发前移除 reasoning item 的持久化 id，保留其摘要和加密内容；`store: true` 及其他 item 的 id 不变。

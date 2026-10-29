@@ -43,6 +43,8 @@ magpie plugin login joycode
 
 ## 消息转发策略
 
+GPT-6 Astra 不支持 `reasoning.effort: none`，但 Codex 压缩可能使用该值。插件仅对该模型的 Responses 请求将显式 `none` 转为最低有效档 `low`，保留其他 reasoning 参数。未指定强度、已指定有效强度及其他模型/协议均不变；该兼容行为会启用低档推理，可能增加推理用量。
+
 默认保留完整多轮对话、工具调用和模型原生请求格式。插件从当前账号的 `joycode_userInfo` 获取真实 `userId`、`tenant`、`orgFullName`，按 JoyCode 请求格式补入正文；三种协议统一设置 `language: UNKNOWN`。身份信息按账号 loader 隔离缓存，不接受客户端指定的用户身份。缺少这些元数据时，已观察到网关返回 `AI_GRAY_ACCESS_DENIED`。
 
 网关可能以 HTTP 200 和 SSE 响应头返回裸 JSON 错误；插件会把这种错误转换为明确的失败响应，避免客户端一直等待。普通 403 权限错误不会再被误标为登录失效。
