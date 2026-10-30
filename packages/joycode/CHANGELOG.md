@@ -2,9 +2,12 @@
 
 ## 0.2.2
 
-- 将 GPT-6 Astra Responses 请求的显式 `reasoning.effort: none` 映射为该模型支持的最低档 `low`，避免 Codex 压缩请求被上游以 `unsupported_value` 拒绝。其他模型、协议、有效强度和未指定强度的请求保持不变。
+- 根据真实网关支持值修复 Codex 压缩的推理强度：GPT-6 Astra、GPT-6.1 Sol 的 `none` / `minimal` 转为 `low`；GPT-6 Sol、GPT-5.6 Sol 的 `minimal` 转为 `low`，保留这两个模型支持的 `none`。其他模型、协议、有效强度和未指定强度不变。
+- 2026-10-30 对账号目录的全部四个 Responses 模型逐一发送 `none` 和 `minimal` 共八次真实请求：两个 Sol 的 `none` 返回 `OK`；其余六个组合明确返回 `unsupported_value`，参数为 `reasoning.effort`，支持值均包含 `low`。不依据 Codex 模型目录推断 JoyCode 后端能力。
 
-验证：真实账号下原请求的 `none` 被上游拒绝；修补后通过插件发送两次带 `none` 和历史 reasoning id 的短请求，分别收到 `OK`（4.0 秒）和单句摘要（2.3 秒），均包含 `response.completed`。尚未在原始长会话中重跑 Codex 压缩。
+修补后八个组合再次通过插件进行真实流式请求，全部返回 `OK` 和 `response.completed`（1.3–4.7 秒）。
+
+验证范围为短请求和插件转发链路，尚未在原始长会话中重跑 Codex 压缩。
 
 ## 0.2.1
 

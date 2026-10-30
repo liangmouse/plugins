@@ -219,6 +219,44 @@ test('Responses maps GPT-6 Astra reasoning none to low while preserving the payl
   })
 })
 
+for (const [label, model, effort, expectedEffort] of [
+  ['GPT-6 Astra none', 'GPT-6 Astra', 'none', 'low'],
+  ['GPT-6 Astra minimal', 'GPT-6 Astra', 'minimal', 'low'],
+  ['GPT-6.1 Sol none', 'GPT-6.1 Sol', 'none', 'low'],
+  ['GPT-6.1 Sol minimal', 'GPT-6.1 Sol', 'minimal', 'low'],
+  ['GPT-6 Sol minimal', 'GPT-6 Sol', 'minimal', 'low'],
+  ['GPT-5.6 Sol minimal', 'GPT-5.6 Sol', 'minimal', 'low'],
+  ['GPT-6 Sol none', 'GPT-6 Sol', 'none', 'none'],
+  ['GPT-5.6 Sol none', 'GPT-5.6 Sol', 'none', 'none'],
+  ['unknown model none', 'Unknown Model', 'none', 'none'],
+  ['unknown model minimal', 'Unknown Model', 'minimal', 'minimal'],
+]) {
+  test(`Responses maps ${label} reasoning effort`, async t => {
+    let sent
+    const payload = {
+      model,
+      input: 'OK',
+      reasoning: { effort, summary: 'auto' },
+      metadata: { case: label },
+      stream: true,
+    }
+    const r = await request(t, new Response('data: [DONE]\n\n', {
+      headers: { 'content-type': 'text/event-stream' },
+    }), {
+      input: 'https://api-ai.jd.com/v1/responses',
+      payload,
+      upstream(_url, init) { sent = JSON.parse(init.body) },
+    })
+    assert.equal(r.status, 200)
+    await r.text()
+    const { userId, tenant, orgFullName, language, ...forwarded } = sent
+    assert.deepEqual(forwarded, {
+      ...payload,
+      reasoning: { ...payload.reasoning, effort: expectedEffort },
+    })
+  })
+}
+
 for (const [label, model, reasoning] of [
   ['low', 'GPT-6 Astra', { effort: 'low', summary: 'auto' }],
   ['medium', 'GPT-6 Astra', { effort: 'medium', summary: 'auto' }],
