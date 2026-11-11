@@ -37,7 +37,7 @@ test('HTTP 200 SSE code 401 expires a ticket after identity has been cached', as
       return Response.json({ code: 0, data: { userId: 'test-user' } })
     }
     chats++
-    return new Response(chats === 1 ? 'data: [DONE]\n\n' : JSON.stringify({ code: 401, data: null, msg: '登录票据已失效' }), { headers: { 'content-type': 'text/event-stream' } })
+    return new Response(chats === 1 ? 'data: {"choices":[{"delta":{"content":"OK"},"finish_reason":"stop"}]}\n\n' : JSON.stringify({ code: 401, data: null, msg: '登录票据已失效' }), { headers: { 'content-type': 'text/event-stream' } })
   })
   const hooks = await plugin.server({})
   const loader = await hooks.auth.loader(async () => ({ type: 'api', key: 'fake-key' }))
@@ -60,6 +60,43 @@ test('valid SSE including tool deltas is preserved byte for byte', async t => {
   const r = await request(t, new Response(chunks([text.slice(0,4), text.slice(4)]), { headers: { 'content-type': 'text/event-stream' } }))
   assert.equal(r.status, 200)
   assert.equal(await r.text(), text)
+})
+test('empty Chat completions are reported as upstream errors', async t => {
+  for (const text of [
+    'data: [DONE]\n\n',
+    'data: {"choices":[]}\n\ndata: [DONE]\n\n',
+    'data: {"choices":[{"delta":{},"finish_reason":"stop"}]}\n\ndata: [DONE]\n\n',
+  ]) {
+    const r = await request(t, new Response(text, { headers: { 'content-type': 'text/event-stream' } }))
+    const body = await r.text()
+    assert.equal(r.status, 200)
+    assert.match(body, /"code":"empty_response"/)
+    assert.equal(body.includes('[DONE]'), false)
+  }
+})
+test('Chat completions report incomplete EOF after partial output', async t => {
+  const text = 'data: {"choices":[{"delta":{"content":"partial"}}]}\n'
+  const r = await request(t, new Response(chunks([text.slice(0, 20), text.slice(20)]), { headers: { 'content-type': 'text/event-stream' } }))
+  assert.match(await r.text(), /"code":"incomplete_response"/)
+})
+test('Chat completions stream valid deltas before upstream EOF', async t => {
+  let controller
+  const first = 'data: {"choices":[{"delta":{"content":"first"}}]}\n\n'
+  const last = 'data: {"choices":[{"delta":{},"finish_reason":"stop"}]}\n\n'
+  const upstream = new ReadableStream({ start(c) { controller = c; c.enqueue(new TextEncoder().encode(first)) } })
+  const r = await request(t, new Response(upstream, { headers: { 'content-type': 'text/event-stream' } }))
+  const reader = r.body.getReader()
+  assert.equal(new TextDecoder().decode((await reader.read()).value), first)
+  controller.enqueue(new TextEncoder().encode(last)); controller.close()
+  assert.equal(new TextDecoder().decode((await reader.read()).value), last)
+  assert.equal((await reader.read()).done, true)
+})
+test('Chat completions preserve explicit length and content-filter endings', async t => {
+  for (const finish_reason of ['length', 'content_filter']) {
+    const text = `data: ${JSON.stringify({ choices: [{ delta: {}, finish_reason }] })}\n\n`
+    const r = await request(t, new Response(text, { headers: { 'content-type': 'text/event-stream' } }))
+    assert.equal(await r.text(), text)
+  }
 })
 test('empty upstream success becomes gateway error', async t => {
   const r = await request(t, new Response('', { headers: { 'content-type': 'text/event-stream' } }))

@@ -348,11 +348,11 @@ async function normalizeChatResponse(response) {
     if (json?.choices) return Response.json(json)
     return chatError(502, 'invalid_response', 'JoyCode 未返回有效的对话响应')
   }
-  // Replay the inspected bytes and then stream normally, preserving tool deltas.
+  // Replay the inspected bytes and validate Chat terminal events incrementally.
   const headers = new Headers(response.headers)
   headers.delete('content-length')
   headers.delete('content-encoding')
-  return new Response(new ReadableStream({
+  const source = new ReadableStream({
     async pull(controller) {
       if (buffered.length) { controller.enqueue(buffered.shift()); return }
       try {
@@ -362,7 +362,83 @@ async function normalizeChatResponse(response) {
       } catch (error) { controller.error(error) }
     },
     cancel(reason) { return reader.cancel(reason) },
-  }), { status: response.status, headers })
+  })
+  const normalized = normalizeChatSse(source)
+  return new Response(normalized, { status: response.status, headers })
+}
+
+function normalizeChatSse(source) {
+  const decoder = new TextDecoder()
+  const encoder = new TextEncoder()
+  let pending = ''
+  let sawOutput = false
+  let terminalSeen = false
+  let stopped = false
+  let ending = '\n'
+  const nonEmpty = value => typeof value === 'string' && value.length > 0
+
+  const fail = (controller, code) => {
+    const message = code === 'empty_response' ? 'JoyCode 返回空响应' : 'JoyCode 响应流未正常终止'
+    controller.enqueue(encoder.encode(`data: ${JSON.stringify({ error: { type: 'upstream_error', code, message } })}${ending}${ending}`))
+    stopped = true
+  }
+
+  const frame = (text, controller) => {
+    if (stopped) return
+    const data = text.split(/\r?\n/).filter(line => line.startsWith('data:'))
+      .map(line => line.slice(5).replace(/^ /, '')).join('\n')
+    if (data.trim() === '[DONE]') {
+      if (!sawOutput && !terminalSeen) { fail(controller, 'empty_response'); return }
+      terminalSeen = true
+    } else {
+      let json
+      try { json = JSON.parse(data) } catch {}
+      if (json?.error) {
+        terminalSeen = true
+        stopped = true
+      } else if (Array.isArray(json?.choices)) {
+        for (const choice of json.choices) {
+          const delta = choice?.delta
+          if (nonEmpty(delta?.content) || nonEmpty(delta?.refusal) ||
+            (Array.isArray(delta?.tool_calls) && delta.tool_calls.some(call =>
+              nonEmpty(call?.id) || nonEmpty(call?.function?.name) || nonEmpty(call?.function?.arguments))) ||
+            nonEmpty(delta?.function_call?.name) || nonEmpty(delta?.function_call?.arguments)) sawOutput = true
+        }
+        const reasons = json.choices.map(choice => choice?.finish_reason).filter(nonEmpty)
+        if (reasons.length) {
+          if (!sawOutput && reasons.some(reason => reason !== 'length' && reason !== 'content_filter')) {
+            fail(controller, 'empty_response')
+            return
+          }
+          terminalSeen = true
+        }
+      }
+    }
+    controller.enqueue(encoder.encode(text))
+  }
+
+  const drain = controller => {
+    let boundary
+    while ((boundary = /\r?\n\r?\n/.exec(pending))) {
+      ending = boundary[0].startsWith('\r') ? '\r\n' : '\n'
+      const text = pending.slice(0, boundary.index + boundary[0].length)
+      pending = pending.slice(text.length)
+      frame(text, controller)
+    }
+  }
+
+  return source.pipeThrough(new TransformStream({
+    transform(chunk, controller) {
+      pending += decoder.decode(chunk, { stream: true })
+      drain(controller)
+    },
+    flush(controller) {
+      pending += decoder.decode()
+      drain(controller)
+      if (pending) frame(pending, controller)
+      if (!stopped && !terminalSeen) fail(controller, sawOutput ? 'incomplete_response' : 'empty_response')
+    },
+  }))
 }
 
 // ---------------------------------------------------------------- account data

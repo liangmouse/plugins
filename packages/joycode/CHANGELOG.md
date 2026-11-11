@@ -1,5 +1,9 @@
 # 更新记录
 
+## Unreleased
+
+- Chat Completions SSE 增加空响应和提前结束保护：仅 `[DONE]`、空 `choices` 或无有效输出的正常终止返回 `empty_response`；已有输出但缺少终止事件的 EOF 返回 `incomplete_response`。正常工具调用、长度截断和内容过滤保持原有语义。
+
 ## 0.1.1
 
 - 支持浏览器登录京东账号，自动接收并验证 JoyCode 票据，保存租户和登录类型。
